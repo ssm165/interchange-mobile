@@ -1,0 +1,228 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Interchange Mobile Money - Développement</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  <style>
+    body {
+      font-family: 'Arial', sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #1a1a1a;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: #ffffff;
+    }
+    .container {
+      max-width: 450px;
+      padding: 30px;
+      background-color: #2d2d2d;
+      border-radius: 10px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      border: 2px solid #ff6200;
+    }
+    .logo {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .logo svg {
+      width: 80px;
+      height: 80px;
+      fill: #ff6200;
+    }
+    h2 {
+      color: #ff6200;
+      text-align: center;
+      margin-bottom: 25px;
+      font-size: 2em;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+    .input-group {
+      position: relative;
+      margin: 15px 0;
+    }
+    input, select {
+      width: 100%;
+      padding: 12px 40px 12px 15px;
+      border: 2px solid #444444;
+      border-radius: 5px;
+      background-color: #3a3a3a;
+      color: #ffffff;
+      font-size: 1em;
+      transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    }
+    input:focus, select:focus {
+      border-color: #ff6200;
+      box-shadow: 0 0 8px rgba(255, 98, 0, 0.5);
+      outline: none;
+    }
+    input::placeholder {
+      color: #aaaaaa;
+    }
+    .input-group i {
+      position: absolute;
+      right: 15px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #ff6200;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      background-color: #ff6200;
+      color: #ffffff;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 1.2em;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      transition: background-color 0.3s ease, transform 0.2s ease;
+    }
+    button:hover {
+      background-color: #e65c00;
+      transform: scale(1.02);
+    }
+    #result {
+      text-align: center;
+      margin-top: 15px;
+      font-size: 1.1em;
+      transition: color 0.3s ease;
+    }
+    .success { color: #28a745; }
+    .error { color: #dc3545; }
+    .loading { color: #ff6200; font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">
+      <svg viewBox="0 0 100 100">
+        <circle cx="50" cy="40" r="20" fill="#ff6200" />
+        <path d="M30 60 L70 60 M50 60 L50 80" stroke="#ffffff" stroke-width="5" stroke-linecap="round" />
+        <path d="M30 70 L20 80 M70 70 L80 80" stroke="#ffffff" stroke-width="5" stroke-linecap="round" />
+      </svg>
+    </div>
+    <h2>Interchange Mobile <i class="fas fa-exchange-alt"></i></h2>
+    <div class="input-group">
+      <input type="number" id="amount" placeholder="Montant (XOF)" step="0.01" min="0" required>
+      <i class="fas fa-money-bill-wave"></i>
+    </div>
+    <div class="input-group">
+      <select id="fromNetwork" required>
+        <option value="">Réseau source</option>
+        <option value="wave">Wave</option>
+        <option value="orange">Orange Money</option>
+        <option value="mtn">MTN</option>
+        <option value="moov">Moov</option>
+      </select>
+    </div>
+    <div class="input-group">
+      <input type="tel" id="senderNumber" placeholder="Numéro émetteur (ex: +22512345678)" pattern="\+[0-9]{10,12}" required>
+      <i class="fas fa-user"></i>
+    </div>
+    <div class="input-group">
+      <select id="toNetwork" required>
+        <option value="">Réseau destinataire</option>
+        <option value="wave">Wave</option>
+        <option value="orange">Orange Money</option>
+        <option value="mtn">MTN</option>
+        <option value="moov">Moov</option>
+      </select>
+    </div>
+    <div class="input-group">
+      <input type="tel" id="recipientNumber" placeholder="Numéro destinataire (ex: +22512345678)" pattern="\+[0-9]{10,12}" required>
+      <i class="fas fa-user-plus"></i>
+    </div>
+    <button onclick="transferMoney()">Transférer <i class="fas fa-arrow-right"></i></button>
+    <p id="result"></p>
+  </div>
+
+  <script>
+    async function transferMoney() {
+      const amount = document.getElementById('amount').value;
+      const fromNetwork = document.getElementById('fromNetwork').value;
+      const toNetwork = document.getElementById('toNetwork').value;
+      const senderNumber = document.getElementById('senderNumber').value;
+      const recipientNumber = document.getElementById('recipientNumber').value;
+      const resultDiv = document.getElementById('result');
+
+      if (!amount || !fromNetwork || !toNetwork || !senderNumber || !recipientNumber || fromNetwork === toNetwork) {
+        resultDiv.innerHTML = 'Veuillez remplir tous les champs et choisir des réseaux différents.';
+        resultDiv.className = 'error';
+        return;
+      }
+
+      resultDiv.innerHTML = 'Traitement en cours <i class="fas fa-spinner fa-spin"></i>';
+      resultDiv.className = 'loading';
+
+      try {
+        const response = await simulateTransfer(fromNetwork, toNetwork, amount, senderNumber, recipientNumber);
+        resultDiv.innerHTML = `Transfert de ${amount} XOF de ${fromNetwork.toUpperCase()} (émetteur: ${senderNumber}) vers ${toNetwork.toUpperCase()} (destinataire: ${recipientNumber}) réussi. Aucun frais appliqué. <i class="fas fa-check-circle"></i>`;
+        resultDiv.className = 'success';
+      } catch (error) {
+        resultDiv.innerHTML = `Erreur : ${error.message} <i class="fas fa-exclamation-triangle"></i>`;
+        resultDiv.className = 'error';
+      }
+    }
+
+    function simulateTransfer(from, to, amount, sender, recipient) {
+      return new Promise((resolve, reject) => {
+        setTimeout(() => {
+          if (amount <= 0) {
+            reject(new Error('Montant invalide.'));
+          } else if (!/^\+?[0-9]{10,12}$/.test(sender) || !/^\+?[0-9]{10,12}$/.test(recipient)) {
+            reject(new Error('Numéros de téléphone invalides.'));
+          } else {
+            resolve(`Transaction simulée de ${amount} XOF.`);
+          }
+        }, 1500);
+      });
+    }
+  </script>
+</body>

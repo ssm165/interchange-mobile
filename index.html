@@ -1,0 +1,179 @@
+
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Inscription - Interchange Mobile Money</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  <style>
+    body {
+      font-family: 'Arial', sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #1a1a1a;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: #ffffff;
+    }
+    .container {
+      max-width: 450px;
+      padding: 30px;
+      background-color: #2d2d2d;
+      border-radius: 10px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      border: 2px solid #ff6200;
+    }
+    .logo {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .logo svg {
+      width: 80px;
+      height: 80px;
+      fill: #ff6200;
+    }
+    h2 {
+      color: #ff6200;
+      text-align: center;
+      margin-bottom: 25px;
+      font-size: 2em;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+    .input-group {
+      position: relative;
+      margin: 15px 0;
+    }
+    input {
+      width: 100%;
+      padding: 12px 40px 12px 15px;
+      border: 2px solid #444444;
+      border-radius: 5px;
+      background-color: #3a3a3a;
+      color: #ffffff;
+      font-size: 1em;
+      transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    }
+    input:focus {
+      border-color: #ff6200;
+      box-shadow: 0 0 8px rgba(255, 98, 0, 0.5);
+      outline: none;
+    }
+    input::placeholder {
+      color: #aaaaaa;
+    }
+    .input-group i {
+      position: absolute;
+      right: 15px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #ff6200;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      background-color: #ff6200;
+      color: #ffffff;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 1.2em;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      transition: background-color 0.3s ease, transform 0.2s ease;
+    }
+    button:hover {
+      background-color: #e65c00;
+      transform: scale(1.02);
+    }
+    #result {
+      text-align: center;
+      margin-top: 15px;
+      font-size: 1.1em;
+      transition: color 0.3s ease;
+    }
+    .success { color: #28a745; }
+    .error { color: #dc3545; }
+    .loading { color: #ff6200; font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">
+      <svg viewBox="0 0 100 100">
+        <circle cx="50" cy="40" r="20" fill="#ff6200" />
+        <path d="M30 60 L70 60 M50 60 L50 80" stroke="#ffffff" stroke-width="5" stroke-linecap="round" />
+        <path d="M30 70 L20 80 M70 70 L80 80" stroke="#ffffff" stroke-width="5" stroke-linecap="round" />
+      </svg>
+    </div>
+    <h2>Inscription <i class="fas fa-user-plus"></i></h2>
+    <div class="input-group">
+      <input type="text" id="username" placeholder="Nom d'utilisateur" required>
+      <i class="fas fa-user"></i>
+    </div>
+    <div class="input-group">
+      <input type="email" id="email" placeholder="Email" required>
+      <i class="fas fa-envelope"></i>
+    </div>
+    <div class="input-group">
+      <input type="tel" id="phone" placeholder="Numéro de téléphone (ex: +22512345678)" pattern="\+[0-9]{10,12}" required>
+      <i class="fas fa-phone"></i>
+    </div>
+    <div class="input-group">
+      <input type="password" id="password" placeholder="Mot de passe" required>
+      <i class="fas fa-lock"></i>
+    </div>
+    <button onclick="signup()">S'inscrire <i class="fas fa-arrow-right"></i></button>
+    <p id="result"></p>
+  </div>
+
+  <script>
+    async function signup() {
+      const username = document.getElementById('username').value;
+      const email = document.getElementById('email').value;
+      const phone = document.getElementById('phone').value;
+      const password = document.getElementById('password').value;
+      const resultDiv = document.getElementById('result');
+
+      if (!username || !email || !phone || !password) {
+        resultDiv.innerHTML = 'Veuillez remplir tous les champs.';
+        resultDiv.className = 'error';
+        return;
+      }
+
+      resultDiv.innerHTML = 'Inscription en cours <i class="fas fa-spinner fa-spin"></i>';
+      resultDiv.className = 'loading';
+
+      try {
+        const response = await simulateSignup(username, email, phone, password);
+        resultDiv.innerHTML = `Inscription réussie pour ${username}! Redirection... <i class="fas fa-check-circle"></i>`;
+        resultDiv.className = 'success';
+        setTimeout(() => {
+          window.location.href = 'develop.html';
+        }, 2000);
+      } catch (error) {
+        resultDiv.innerHTML = `Erreur : ${error.message} <i class="fas fa-exclamation-triangle"></i>`;
+        resultDiv.className = 'error';
+      }
+    }
+
+    function simulateSignup(username, email, phone, password) {
+      return new Promise((resolve, reject) => {
+        setTimeout(() => {
+          if (!/^\+?[0-9]{10,12}$/.test(phone)) {
+            reject(new Error('Numéro de téléphone invalide.'));
+          } else if (!/^[a-zA-Z0-9]+$/.test(username)) {
+            reject(new Error('Nom d\'utilisateur invalide (lettres et chiffres uniquement).'));
+          } else {
+            resolve(`Inscription de ${username} simulée.`);
+          }
+        }, 1500);
+      });
+    }
+  </script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'95f24514ad43b7a4',t:'MTc1MjUwOTIxMy4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
