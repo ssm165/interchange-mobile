@@ -99,7 +99,7 @@ input double InpMonthStopUSD = 0.0;   // Perte maximale du mois en dollars (0 = 
 input double InpMonthStopPct = 7.0;   // Perte maximale du mois en % du solde du 1er (0 = non)
 input group "Envoi et gestion"
 input bool   InpConfirm      = true;  // Fenêtre de confirmation avant chaque envoi
-input bool   InpAutoStart    = false; // Mode automatique activé au démarrage
+input bool   InpAutoStart    = true;  // Mode automatique activé au démarrage (le robot envoie seul chaque signal valide)
 input bool   InpManageSL     = true;  // Gérer les paliers SL, la demi-sortie et la durée max
 input bool   InpManageClaude = false; // Gérer aussi les ordres placés par Claude (commentaire MCP)
 input double InpDailyStopPct = 2.0;   // Stop journalier (% du solde, perte réalisée du jour UTC)
