@@ -1,5 +1,5 @@
 ﻿//+------------------------------------------------------------------+
-//| FVG_D1_Multi.mq5 v3.00 - FVG-D1 multi-paires + tableau de bord  |
+//| FVG_D1_Multi.mq5 v3.01 - FVG-D1 multi-paires + tableau de bord  |
 //|                                                                  |
 //| Analyse en direct sur les prix Axi (MetaTrader 5) :              |
 //|  1. Tendance D1 : EMA20/EMA50 sur bougies D1 terminées.          |
@@ -49,7 +49,12 @@
 //| relatif à la paire, risque réduit de moitié, démo seulement      |
 //| tant que « Autoriser le réel » est désactivé. Numéro magique par |
 //| paire, nombre de trades/jour et de positions ouvertes communs.   |
-//| NON VALIDÉ HORS OR : aucun backtest sur ces paires.              |
+//| v3.01 : réglages choisis par backtest sur 12 mois de données Axi |
+//| (oct. 2025 - oct. 2026) : forex EURUSD/GBPUSD/USDJPY avec SL max |
+//| 15 % de l'ATR D1 et sans filtre « calme » (espérance +0,1 à      |
+//| +0,3 R par trade, preuve FAIBLE : ~50-70 trades par paire).      |
+//| Argent, indices, pétrole, crypto : aucun réglage rentable trouvé |
+//| -> bloqués (réglage « Autoriser les paires non validées »).      |
 //| Garde-fou (v2.50) : tout trade manuel ouvert après le démarrage  |
 //| du robot est signalé et, au choix, fermé aussitôt.               |
 //| Installation : Fichier > Ouvrir le dossier des données > MQL5 >  |
@@ -58,7 +63,7 @@
 //| « Algo Trading ».                                                |
 //+------------------------------------------------------------------+
 #property copyright "Méthode FVG-D1"
-#property version   "3.00"
+#property version   "3.01"
 #property description "Analyse FVG-D1 en direct (prix Axi), tableau de bord et bouton d'envoi d'ordre."
 
 #include <Trade/Trade.mqh>
@@ -110,8 +115,9 @@ input int    InpMaxPerDay    = 3;     // Trades FVG maximum par jour (toutes pai
 input int    InpMaxOpenTotal = 2;     // Positions + ordres du robot ouverts en même temps (toutes paires)
 input double InpOthersRisk   = 0.5;   // Hors or : part du risque normal (0,5 = moitié)
 input bool   InpAllowReal    = false; // Autoriser le réel hors or (NON VALIDÉ : démo recommandée)
-input double InpSLatrD1      = 0.25;  // Hors or : SL maximum en fraction de l'ATR14 D1
-input double InpCalmRatio    = 0.9;   // Hors or : pas de signal si l'ATR14 D1 < X fois sa moyenne des 120 jours
+input double InpSLatrD1      = 0.15;  // Forex : SL maximum en fraction de l'ATR14 D1 (backtest 12 mois)
+input double InpCalmRatio    = 0.0;   // Forex : pas de signal si l'ATR14 D1 < X fois sa moyenne des 120 jours (0 = non, meilleur au backtest)
+input bool   InpAllowUntested = false; // Autoriser argent, indices, pétrole, crypto (aucun réglage rentable trouvé)
 input int    InpMaxHoldHours = 24;    // Mode personnalisé : durée maximale d'un trade (heures)
 input double InpNeutralPct   = 0.15;  // Une sortie entre -X % et 0 du solde (break-even, commission) n'est pas une perte pour la pause
 input int    InpPauseLosses  = 2;     // Pertes de suite avant une pause (0 = pas de pause)
@@ -1414,6 +1420,11 @@ bool CanSend(string &why, double &lots)
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED))
      {
       why = "Active « Algo Trading » dans MT5.";
+      return false;
+     }
+   if(g_class != 0 && g_class != 2 && g_class != 3 && !InpAllowUntested)
+     {
+      why = g_className + " : aucun réglage rentable trouvé au backtest, envoi bloqué.";
       return false;
      }
    if(g_class != 0 && IsReal() && !InpAllowReal)
