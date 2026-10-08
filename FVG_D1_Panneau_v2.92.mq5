@@ -1,5 +1,5 @@
 ﻿//+------------------------------------------------------------------+
-//| FVG_D1_Panneau.mq5 - tableau de bord FVG-D1 + bouton d'envoi      |
+//| FVG_D1_Panneau.mq5 v2.92 - tableau de bord FVG-D1 + envoi d'ordre |
 //|                                                                  |
 //| Analyse en direct sur les prix Axi (MetaTrader 5) :              |
 //|  1. Tendance D1 : EMA20/EMA50 sur bougies D1 terminées.          |
@@ -22,7 +22,8 @@
 //| Suivi du test de 40 trades (arrêt si baisse > 15 %) et mesure du |
 //| glissement réel sur chaque sortie SL/TP.                         |
 //| Modes : STANDARD (par défaut) = stratégie de la v2.60 :          |
-//| FVG 0,5 + BOS, sans H1/H4, sortie 24 h (~10 trades/mois) ;       |
+//| FVG 0,5 + BOS, sans H1/H4, sortie 24 h, pas de signal le vendredi|
+//| après 14 h UTC (~10 trades/mois) ;                               |
 //| PRUDENT = règles v2.70 (H1+H4, moitié à +2R, 12 h, vendredi) ;   |
 //| ACTIF = FVG 0,2 sans BOS (~24 trades/mois).                      |
 //| MIXTE (v2.90) = signaux du mode ACTIF ; risque plein             |
@@ -34,7 +35,9 @@
 //| < 1,5 % du prix) : 5 ans testés, baisse max 26 % -> 9 %.         |
 //| v2.92 : stop journalier strict (lot réduit à la perte restante), |
 //| filtre de spread (% du risque R), vendredi 14 h aussi en STANDARD,|
-//| baisse du test calculée sur l'équité, dépôts/retraits exclus.    |
+//| baisse du test sur l'équité, dépôts/retraits exclus du test et du|
+//| plus haut du solde, sorties break-even neutres pour la pause,    |
+//| expiration de l'ordre alignée sur la validité du signal.         |
 //| Garde-fou (v2.50) : tout trade manuel ouvert après le démarrage  |
 //| du robot est signalé et, au choix, fermé aussitôt.               |
 //| Installation : Fichier > Ouvrir le dossier des données > MQL5 >  |
@@ -93,6 +96,7 @@ input double InpMaxSpreadPct = 10.0;  // Pas d'ordre si le spread dépasse X % d
 input int    InpStdFriday    = 14;    // Mode Standard : pas de signal le vendredi dès X h UTC (-1 = non)
 input int    InpMaxPerDay    = 2;     // Trades FVG maximum par jour (robot)
 input int    InpMaxHoldHours = 24;    // Mode personnalisé : durée maximale d'un trade (heures)
+input double InpNeutralPct   = 0.15;  // Une sortie entre -X % et 0 du solde (break-even, commission) n'est pas une perte pour la pause
 input int    InpPauseLosses  = 2;     // Pertes de suite avant une pause (0 = pas de pause)
 input int    InpPauseHours   = 2;     // Durée de la pause (heures)
 input group "Garde-fou trades manuels"
@@ -841,13 +845,38 @@ void UpdateTestStats()
 double PeakBalance()
   {
    double bal = AccountInfoDouble(ACCOUNT_BALANCE);
-   string gv  = "FVGP_PEAK_" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
+   string lg  = IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
+   string gv  = "FVGP_PEAK_" + lg;
+   string gt  = "FVGP_PEAKT_" + lg;   // dernier instant où les dépôts/retraits ont été pris en compte
    double pk  = GlobalVariableCheck(gv) ? GlobalVariableGet(gv) : 0;
-   if(bal > pk)
+   static datetime nextScan = 0;
+   if(TimeLocal() >= nextScan)
      {
-      pk = bal;
-      GlobalVariableSet(gv, pk);
+      nextScan = TimeLocal() + 30;
+      datetime now = TimeTradeServer();
+      if(GlobalVariableCheck(gt) && pk > 0)
+        {
+         datetime from = (datetime)GlobalVariableGet(gt);
+         if(HistorySelect(from, now + 3600))
+           {
+            int tot = HistoryDealsTotal();
+            for(int i = 0; i < tot; i++)
+              {
+               ulong dl = HistoryDealGetTicket(i);
+               if(dl == 0 || HistoryDealGetInteger(dl, DEAL_TYPE) != DEAL_TYPE_BALANCE)
+                  continue;
+               if((datetime)HistoryDealGetInteger(dl, DEAL_TIME) <= from)
+                  continue;   // déjà compté
+               pk += HistoryDealGetDouble(dl, DEAL_PROFIT);   // retrait : le plus haut baisse aussi ; dépôt : il monte
+              }
+            pk = MathMax(pk, 0.0);
+           }
+        }
+      GlobalVariableSet(gt, (double)now);
      }
+   if(bal > pk)
+      pk = bal;
+   GlobalVariableSet(gv, pk);
    return pk;
   }
 
@@ -988,7 +1017,7 @@ double TodayPnl(int &nFvg, int &streak, datetime &lastLoss)
          if(GlobalVariableCheck(GvG((ulong)HistoryDealGetInteger(d, DEAL_POSITION_ID))))
             continue;   // fermé par le garde-fou : compte dans le stop journalier, pas dans la série de pertes
          v += HistoryDealGetDouble(d, DEAL_COMMISSION);
-         if(v < -1e-9)
+         if(v < -AccountInfoDouble(ACCOUNT_BALANCE) * InpNeutralPct / 100.0)
            {
             streak++;
             lastLoss = (datetime)HistoryDealGetInteger(d, DEAL_TIME);
@@ -1342,7 +1371,7 @@ bool SendOrder(const bool manual)
    double   tp    = NormalizeDouble(g.tp, _Digits);
    double   risk  = lots * LossPerLot(g.s, entry, sl);
    double   gain  = lots * LossPerLot(g.s, entry, tp);
-   datetime expT   = g.t + InpMaxAgeBars * 15 * 60;
+   datetime expT   = g.t + (InpMaxAgeBars + 1) * 900;   // dernière bougie remplissable = signal + InpMaxAgeBars
    string   side  = (g.s > 0) ? "BUY LIMIT" : "SELL LIMIT";
    if(manual && InpConfirm)
      {
@@ -1776,7 +1805,7 @@ void Draw()
       color    sc   = (g.s > 0) ? C_GREEN : C_RED;
       double   lots = LotsFor(g);
       double   risk = lots * LossPerLot(g.s, g.entry, g.sl);
-      datetime expT = g.t + InpMaxAgeBars * 900;
+      datetime expT = g.t + (InpMaxAgeBars + 1) * 900;
       long     left = (long)expT - (long)TimeTradeServer();
       Lbl("sB", x0 + 28, ySig + 28, (g.s > 0 ? "▲  BUY LIMIT   " : "▼  SELL LIMIT   ") + Px(g.entry), sc, fs + 5, "Segoe UI Semibold");
       Lbl("sT", x0 + W - 28, ySig + 12, "bougie " + HM(ToUTC(g.t)) + " UTC" + (InpMode == MODE_MIXTE ? (g.q < 1.0 ? " · demi-risque" : " · risque plein") : ""),
