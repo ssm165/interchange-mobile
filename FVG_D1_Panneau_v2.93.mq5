@@ -1,5 +1,5 @@
 ﻿//+------------------------------------------------------------------+
-//| FVG_D1_Panneau.mq5 v2.92 - tableau de bord FVG-D1 + envoi d'ordre |
+//| FVG_D1_Panneau.mq5 v2.93 - tableau de bord FVG-D1 + envoi d'ordre |
 //|                                                                  |
 //| Analyse en direct sur les prix Axi (MetaTrader 5) :              |
 //|  1. Tendance D1 : EMA20/EMA50 sur bougies D1 terminées.          |
@@ -38,6 +38,11 @@
 //| baisse du test sur l'équité, dépôts/retraits exclus du test et du|
 //| plus haut du solde, sorties break-even neutres pour la pause,    |
 //| expiration de l'ordre alignée sur la validité du signal.         |
+//| v2.93 : nouveau tableau de bord à 3 onglets : ANALYSE (tuiles    |
+//| jour/mois/test/baisse, règle de prix SL-entrée-TP avec le prix,  |
+//| 12 feux verts des règles, barre de progression en R de la        |
+//| position), PERFORMANCE (réussite, profit factor, espérance,      |
+//| courbe des trades), JOURNAL.                                     |
 //| Garde-fou (v2.50) : tout trade manuel ouvert après le démarrage  |
 //| du robot est signalé et, au choix, fermé aussitôt.               |
 //| Installation : Fichier > Ouvrir le dossier des données > MQL5 >  |
@@ -46,7 +51,7 @@
 //| « Algo Trading ».                                                |
 //+------------------------------------------------------------------+
 #property copyright "Méthode FVG-D1"
-#property version   "2.92"
+#property version   "2.93"
 #property description "Analyse FVG-D1 en direct (prix Axi), tableau de bord et bouton d'envoi d'ordre."
 
 #include <Trade/Trade.mqh>
@@ -133,6 +138,7 @@ input int    InpX            = 10;    // Position du panneau : X
 input int    InpY            = 25;    // Position du panneau : Y
 input int    InpFont         = 9;     // Taille du texte
 
+#define PW         600    // largeur du tableau de bord
 #define C_BG       C'13,17,25'
 #define C_HDR      C'19,24,35'
 #define C_CARD     C'22,29,42'
@@ -220,6 +226,18 @@ int      g_guardN    = 0;   // trades/ordres manuels fermés par le garde-fou
 int      g_guardA    = 0;   // trades/ordres manuels signalés (mode alerte)
 ulong    g_gSeen[];
 
+// Vue PERFORMANCE
+datetime g_pLast  = 0;
+int      g_pN     = 0;    // trades clos du robot depuis le début du test
+int      g_pNw    = 0;
+int      g_pNl    = 0;
+double   g_pSumW  = 0;
+double   g_pSumL  = 0;
+double   g_pBest  = 0;
+double   g_pWorst = 0;
+int      g_pRun   = 0;    // plus longue série de pertes
+double   g_pV[];          // résultat de chaque trade clos du robot
+
 // Journal
 struct Trd
   {
@@ -237,7 +255,7 @@ struct Trd
    string            why;
   };
 
-int      g_view     = 0;   // 0 = analyse, 1 = journal
+int      g_view     = 0;   // 0 = analyse, 1 = journal, 2 = performance
 int      g_period   = 1;   // 0 = jour, 1 = 7 jours, 2 = 30 jours, 3 = tout
 int      g_jrows    = 0;
 datetime g_jLast    = 0;
@@ -1703,6 +1721,148 @@ void Bar(const string name, const int x, const int y, const int w, const double 
    Box(name + "_fi", x, y, MathMax(1, fw), 6, fw > 0 ? fc : C_LINE, fw > 0 ? fc : C_LINE);
   }
 
+void Tick(const string name, const int x, const int y, const int h, const color c)
+  {
+   Box(name, x - 1, y, 2, h, c, c);
+  }
+
+void BarC(const string name, const int x, const int y, const int w, const double frac, const color fc)
+  {
+   double f  = MathMax(0.0, MathMin(1.0, frac));
+   int    fw = (int)MathRound(f * w);
+   Box(name + "_tr", x, y, w, 6, C_LINE, C_LINE);
+   Box(name + "_fi", x, y, MathMax(1, fw), 6, fw > 0 ? fc : C_LINE, fw > 0 ? fc : C_LINE);
+  }
+
+// mode : 0 = pas de barre, 1 = barre d'usage (vert -> rouge), 2 = barre de progression (or)
+void Tile(const string nm, const int x, const int y, const int w, const int h, const string lab, const string val, const color vc,
+          const string sub, const int mode, const double frac)
+  {
+   Box(nm + "_bg", x, y, w, h, C_CARD, C_LINE);
+   Lbl(nm + "_l", x + 10, y + 6, lab, C_MUTED, InpFont - 2, "Segoe UI Semibold");
+   Lbl(nm + "_v", x + 10, y + 18, val, vc, InpFont + 4, "Segoe UI Semibold");
+   Lbl(nm + "_s", x + 10, y + 42, sub, C_MUTED, InpFont - 2);
+   if(mode == 1)
+      Bar(nm + "_b", x + 10, y + h - 10, w - 20, frac);
+   if(mode == 2)
+      BarC(nm + "_b", x + 10, y + h - 10, w - 20, frac, C_GOLD);
+  }
+
+void Dot(const string nm, const int x, const int y, const bool ok, const string text)
+  {
+   Lbl(nm + "_d", x, y, "●", ok ? C_GREEN : C_RED, InpFont);
+   Lbl(nm + "_t", x + 16, y, text, ok ? C_TXT : C_RED, InpFont - 1);
+  }
+
+// onglets ANALYSE / PERFORMANCE / JOURNAL (active : 0, 1 ou 2)
+void Tabs(const int active)
+  {
+   string t[3] = {"ANALYSE", "PERFORMANCE", "JOURNAL"};
+   int    w[3] = {88, 112, 88};
+   int    xr   = InpX + PW - 12;
+   for(int k = 2; k >= 0; k--)
+     {
+      xr -= w[k];
+      Btn("bTab" + IntegerToString(k), xr, InpY + 8, w[k], 24, t[k], k == active ? C_GOLD : C_GREY, k == active ? C'20,20,20' : clrWhite);
+      xr -= 6;
+     }
+  }
+
+void Header(const int active)
+  {
+   int x0 = InpX, y0 = InpY, fs = InpFont;
+   Box("hdr", x0, y0, PW, 64, C_HDR, C_HDR);
+   Box("acc", x0, y0, 4, 64, C_GOLD, C_GOLD);
+   Lbl("t1", x0 + 18, y0 + 8, "FVG-D1  ·  OR", C_GOLD, fs + 5, "Segoe UI Semibold");
+   Lbl("t2", x0 + 18, y0 + 38, "Axi " + (IsReal() ? "RÉEL " : "DÉMO ") + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + "   ·   " +
+       HM(NowUTC()) + " UTC   ·   solde " + Mo(AccountInfoDouble(ACCOUNT_BALANCE)), C_MUTED, fs - 1);
+   Tabs(active);
+  }
+
+// position ouverte du robot : multiple de R actuel, SL en R, gain, durée de tenue
+bool RobotPos(double &rNow, double &rSl, double &pnl, long &held)
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0 || !PositionSelectByTicket(tk))
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagic)
+         continue;
+      int    s    = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl   = PositionGetDouble(POSITION_SL);
+      double tp   = PositionGetDouble(POSITION_TP);
+      long   pid  = PositionGetInteger(POSITION_IDENTIFIER);
+      double R    = 0;
+      if(GlobalVariableCheck(GvR((ulong)pid)))
+         R = GlobalVariableGet(GvR((ulong)pid));
+      if(R <= 0 && tp > 0 && InpRR > 0)
+         R = MathAbs(tp - open) / InpRR;
+      if(R <= 0)
+         return false;
+      double px = (s > 0) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      rNow = s * (px - open) / R;
+      rSl  = (sl > 0) ? s * (sl - open) / R : -1.0;
+      pnl  = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      held = (long)TimeTradeServer() - PositionGetInteger(POSITION_TIME);
+      return true;
+     }
+   return false;
+  }
+
+// statistiques des trades clos du robot depuis le début du test
+void RefreshPerf(const bool force)
+  {
+   if(!force && g_pLast != 0 && TimeLocal() - g_pLast < 20)
+      return;
+   g_pLast = TimeLocal();
+   datetime from = TestStartSrv();
+   Trd tr[];
+   BuildTrades(from, tr);
+   int idx[];
+   int n = ClosedSorted(tr, from, idx);
+   g_pN = 0;
+   g_pNw = 0;
+   g_pNl = 0;
+   g_pSumW = 0;
+   g_pSumL = 0;
+   g_pBest = 0;
+   g_pWorst = 0;
+   g_pRun = 0;
+   ArrayResize(g_pV, 0);
+   int run = 0;
+   for(int a = 0; a < n; a++)
+     {
+      int k = idx[a];
+      if(tr[k].org != "robot")
+         continue;
+      double v = tr[k].net;
+      if(g_pN == 0 || v > g_pBest)
+         g_pBest = v;
+      if(g_pN == 0 || v < g_pWorst)
+         g_pWorst = v;
+      g_pN++;
+      if(v > 0)
+        {
+         g_pNw++;
+         g_pSumW += v;
+         run = 0;
+        }
+      else
+         if(v < 0)
+           {
+            g_pNl++;
+            g_pSumL += v;
+            run++;
+            g_pRun = MathMax(g_pRun, run);
+           }
+      int m = ArraySize(g_pV);
+      ArrayResize(g_pV, m + 1);
+      g_pV[m] = v;
+     }
+  }
+
 void Draw()
   {
    if(g_view == 1)
@@ -1710,9 +1870,14 @@ void Draw()
       DrawJournal();
       return;
      }
+   if(g_view == 2)
+     {
+      DrawPerf();
+      return;
+     }
    //--- données
-   bool     real  = IsReal();
    double   bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double   ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    long     spr   = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    bool     quiet = ((long)TimeTradeServer() - SymbolInfoInteger(_Symbol, SYMBOL_TIME) > 300);
    int      nF = 0, streak = 0;
@@ -1724,6 +1889,7 @@ void Draw()
    bool     pause   = PauseActive(streak, lastLoss);
    double   mp = 0, mlim = 0;
    bool     mHit = MonthStopHit(mp, mlim);
+   UpdateTestStats();
    string   ls[];
    bool     dup = false;
    int      ex  = Exposure(ls, dup);
@@ -1733,7 +1899,16 @@ void Draw()
    int      nl  = MathMin(ArraySize(ls), 4);
    bool     watch = (!g_has && g_trend != 0 && g_dataOk);
    bool     info  = (!g_has && g_info != "");
-   string   sig = (g_has ? "S" : "N") + (watch ? "W" : "") + (info ? "I" : "") + IntegerToString(nl);
+   double   pR = 0, pRsl = -1, pPnl = 0;
+   long     pHeld = 0;
+   bool     hasPos = RobotPos(pR, pRsl, pPnl, pHeld);
+   bool     algo   = (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 && MQLInfoInteger(MQL_TRADE_ALLOWED) != 0);
+   bool     calm   = (InpMinVolPct > 0 && g_vol > 0 && g_vol < InpMinVolPct);
+   int      nw     = NewsWindow();
+   bool     friLate = FridayLate((datetime)((long)TimeTradeServer() - 900));
+   bool     spOk   = (!g_has || InpMaxSpreadPct <= 0 || g_best.dS <= 0 || (ask - bid) <= g_best.dS * InpMaxSpreadPct / 100.0);
+   bool     testStop = (InpTestStopDD > 0 && g_tDD >= InpTestStopDD);
+   string   sig = (g_has ? "S" : "N") + (watch ? "W" : "") + (info ? "I" : "") + (hasPos ? "P" : "") + IntegerToString(nl);
    if(sig != g_sig)
      {
       ObjectsDeleteAll(0, "FVGP_");   // la mise en page change : on redessine dans l'ordre
@@ -1742,53 +1917,53 @@ void Draw()
       g_jrows = 0;
      }
    //--- mise en page
-   int x0 = InpX, y0 = InpY, W = 540, P = 18, fs = InpFont;
-   int hSig  = g_has ? 132 : 60 + (watch ? 40 : 0) + (info ? 20 : 0);
-   int hRisk = 208;
-   int hPos  = 40 + 18 * MathMax(1, nl);
-   int yMk   = y0 + 62;
-   int ySig  = yMk + 116;
-   int yRisk = ySig + hSig + 10;
-   int yPos  = yRisk + hRisk + 10;
+   int x0 = InpX, y0 = InpY, W = PW, P = 18, fs = InpFont;
+   int hK    = 70;
+   int hMk   = 108;
+   int hSig  = g_has ? 196 : 60 + (watch ? 40 : 0) + (info ? 20 : 0);
+   int hChk  = 34 + 4 * 22;
+   int hPos  = 40 + 18 * MathMax(1, nl) + (hasPos ? 44 : 0);
+   int yK    = y0 + 64 + 8;
+   int yMk   = yK + hK + 10;
+   int ySig  = yMk + hMk + 10;
+   int yChk  = ySig + hSig + 10;
+   int yPos  = yChk + hChk + 10;
    int yStat = yPos + hPos + 10;
    int yBtn  = yStat + 42;
    int yFoot = yBtn + 44;
    int H     = yFoot + 24 - y0;
-   //--- fonds (dans l'ordre : fond, en-tête, cartes, jauges)
+   //--- fonds
    Box("bg", x0, y0, W, H, C_BG, C_LINE);
-   Box("hdr", x0, y0, W, 52, C_HDR, C_HDR);
-   Box("acc", x0, y0, 4, 52, C_GOLD, C_GOLD);
-   Box("cSig", x0 + 10, ySig, W - 20, hSig, C_CARD, C_LINE);
-   Box("cRisk", x0 + 10, yRisk, W - 20, hRisk, C_CARD, C_LINE);
-   Box("cPos", x0 + 10, yPos, W - 20, hPos, C_CARD, C_LINE);
-   color stc = ok ? C_GREEN_D : (stopHit || mHit) ? C_RED_D : C_AMBER_D;
-   Box("stat", x0 + 10, yStat, W - 20, 32, stc, stc);
-   Bar("barD", x0 + 28, yRisk + 54, W - 56, stopAmt > 0 ? -pnl / stopAmt : 0.0);
-   Bar("barM", x0 + 28, yRisk + 90, W - 56, mlim > 0 ? -mp / mlim : 0.0);
-   //--- en-tête
-   Lbl("t1", x0 + P, y0 + 7, "FVG-D1  ·  OR", C_GOLD, fs + 5, "Segoe UI Semibold");
-   Lbl("t2", x0 + P, y0 + 32, "Axi " + (real ? "RÉEL " : "DÉMO ") + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + "   ·   " +
-       HM(NowUTC()) + " UTC   ·   solde " + Mo(bal), C_MUTED, fs - 1);
-   string stTxt = ok ? "● PRÊT" : g_has ? "● BLOQUÉ" : "● EN VEILLE";
-   color  stBg  = ok ? C_GREEN_BG : g_has ? C_AMBER_BG : C_GREY;
-   color  stFg  = ok ? C_GREEN : g_has ? C_AMBER : C_MUTED;
-   PillR("pSt", x0 + W - 110, y0 + 14, stTxt, stBg, stFg);
-   Btn("bView", x0 + W - 100, y0 + 12, 88, 28, "JOURNAL", C_GREY, clrWhite);
+   Header(0);
+   color stBg = ok ? C_GREEN_BG : g_has ? C_AMBER_BG : C_GREY;
+   color stFg = ok ? C_GREEN : g_has ? C_AMBER : C_MUTED;
+   PillR("pSt", x0 + W - 12, y0 + 36, ok ? "● PRÊT" : g_has ? "● BLOQUÉ" : "● EN VEILLE", stBg, stFg);
+   //--- tuiles : aujourd'hui, mois, test, baisse
+   int tw = (W - 20 - 3 * 8) / 4;
+   int tx = x0 + 10;
+   Tile("k1", tx, yK, tw, hK, "AUJOURD'HUI", StringFormat("%+.2f ", pnl) + CurSym(), stopHit ? C_RED : (pnl > 0 ? C_GREEN : C_TXT),
+        "limite -" + Mo(stopAmt), 1, stopAmt > 0 ? -pnl / stopAmt : 0.0);
+   Tile("k2", tx + (tw + 8), yK, tw, hK, "CE MOIS", StringFormat("%+.2f ", mp) + CurSym(), mHit ? C_RED : (mp > 0 ? C_GREEN : C_TXT),
+        "limite -" + Mo(mlim), 1, mlim > 0 ? -mp / mlim : 0.0);
+   Tile("k3", tx + 2 * (tw + 8), yK, tw, hK, "TEST " + IntegerToString(InpTestTrades) + " TRADES", IntegerToString(g_tN) + " / " + IntegerToString(InpTestTrades),
+        C_TXT, "net " + StringFormat("%+.2f ", g_tNet) + CurSym(), 2, InpTestTrades > 0 ? (double)g_tN / InpTestTrades : 0.0);
+   Tile("k4", tx + 3 * (tw + 8), yK, tw, hK, "BAISSE DU TEST", DoubleToString(g_tDD, 1) + " %", testStop ? C_RED : (g_tDD > InpTestStopDD * 0.6 && InpTestStopDD > 0 ? C_AMBER : C_TXT),
+        InpTestStopDD > 0 ? "limite " + DoubleToString(InpTestStopDD, 0) + " %" : "pas de limite", 1, InpTestStopDD > 0 ? g_tDD / InpTestStopDD : 0.0);
    //--- marché
-   Lbl("mH", x0 + P, yMk, "MARCHÉ", C_MUTED, fs - 1, "Segoe UI Semibold");
-   Lbl("mP", x0 + P, yMk + 16, Px(bid), C_TXT, fs + 9, "Segoe UI Semibold");
-   Lbl("mS", x0 + P + TextW(Px(bid), fs + 9, "Segoe UI Semibold") + 12, yMk + 30,
+   Box("cMk", x0 + 10, yMk, W - 20, hMk, C_CARD, C_LINE);
+   Lbl("mH", x0 + P + 4, yMk + 8, "MARCHÉ", C_MUTED, fs - 1, "Segoe UI Semibold");
+   Lbl("mP", x0 + P + 4, yMk + 24, Px(bid), C_TXT, fs + 9, "Segoe UI Semibold");
+   Lbl("mS", x0 + P + 4 + TextW(Px(bid), fs + 9, "Segoe UI Semibold") + 12, yMk + 38,
        "spread " + IntegerToString(spr) + " pts" + (quiet ? "  ·  pas de cotation" : ""), quiet ? C_AMBER : C_MUTED, fs - 1);
    string tTxt = (g_trend > 0) ? "▲  HAUSSIÈRE · achats" : (g_trend < 0) ? "▼  BAISSIÈRE · ventes" : "●  SANS TENDANCE";
    color  tBg  = (g_trend > 0) ? C_GREEN_BG : (g_trend < 0) ? C_RED_BG : C_GREY;
    color  tFg  = (g_trend > 0) ? C_GREEN : (g_trend < 0) ? C_RED : C_MUTED;
-   PillR("pT", x0 + W - P, yMk + 20, tTxt, tBg, tFg);
-   bool calm = (InpMinVolPct > 0 && g_vol > 0 && g_vol < InpMinVolPct);
-   Lbl("mE", x0 + P, yMk + 56, "EMA20 " + DoubleToString(g_e20, 1) + "  ·  EMA50 " + DoubleToString(g_e50, 1) +
+   PillR("pT", x0 + W - P - 4, yMk + 22, tTxt, tBg, tFg);
+   Lbl("mE", x0 + P + 4, yMk + 62, "EMA20 " + DoubleToString(g_e20, 1) + "  ·  EMA50 " + DoubleToString(g_e50, 1) +
        "  ·  ATR M15 " + DoubleToString(g_atr, 2) + " $", C_MUTED, fs - 1);
    string a1 = (g_trH1 > 0) ? "▲" : (g_trH1 < 0) ? "▼" : "?";
    string a4 = (g_trH4 > 0) ? "▲" : (g_trH4 < 0) ? "▼" : "?";
-   Lbl("mV", x0 + P, yMk + 74, "Volatilité jour " + DoubleToString(g_vol, 2) + " %" +
+   Lbl("mV", x0 + P + 4, yMk + 78, "Volatilité jour " + DoubleToString(g_vol, 2) + " %" +
        (InpMinVolPct > 0 ? (calm ? " < " : " ≥ ") + DoubleToString(InpMinVolPct, 1) + " %" : "") +
        "   ·   H1 " + a1 + "   ·   H4 " + a4, calm ? C_AMBER : C_MUTED, fs - 1);
    string pr = "Mode " + (InpMode == MODE_PRUDENT ? "PRUDENT" : InpMode == MODE_ACTIF ? "ACTIF" : InpMode == MODE_STANDARD ? "STANDARD" :
@@ -1796,8 +1971,9 @@ void Draw()
                " · FVG " + DoubleToString(g_minFVG, 1) + (g_bos ? " + BOS" : "") + (g_tH1 ? " + H1" : "") + (g_tH4 ? " + H4" : "") +
                (g_partR > 0 ? " · moitié +" + DoubleToString(g_partR, 0) + "R" : "") +
                (g_hold > 0 ? " · " + IntegerToString(g_hold) + " h max" : "");
-   Lbl("mR", x0 + P, yMk + 92, pr, C_MUTED, fs - 1);
+   Lbl("mR", x0 + P + 4, yMk + 92, pr, C_MUTED, fs - 1);
    //--- signal
+   Box("cSig", x0 + 10, ySig, W - 20, hSig, C_CARD, C_LINE);
    Lbl("sH", x0 + 28, ySig + 10, "SIGNAL", C_MUTED, fs - 1, "Segoe UI Semibold");
    if(g_has)
      {
@@ -1820,6 +1996,37 @@ void Draw()
       else
          Lbl("s5", x0 + 28, ySig + 106, "Lot minimum trop risqué pour le capital", C_AMBER, fs, "Segoe UI Semibold");
       Lbl("s6", x0 + W - 28, ySig + 108, (g.room > 1e6) ? "liquidité libre" : "swing à " + DoubleToString(g.room, 1) + "R", C_MUTED, fs - 1, "Segoe UI", ANCHOR_RIGHT_UPPER);
+      //--- règle de prix : SL à gauche, TP à droite, prix actuel en or
+      int    rx   = x0 + 28;
+      int    rw   = W - 56;
+      int    ry   = ySig + 156;
+      double span = g.tp - g.sl;
+      if(MathAbs(span) > 0)
+        {
+         double fe  = MathMax(0.0, MathMin(1.0, (g.entry - g.sl) / span));
+         int    xe  = rx + (int)MathRound(fe * rw);
+         Box("rzR", rx, ry, MathMax(1, xe - rx), 6, C_RED_D, C_RED_D);
+         Box("rzG", xe, ry, MathMax(1, rx + rw - xe), 6, C_GREEN_D, C_GREEN_D);
+         Tick("rtS", rx, ry - 4, 14, C_RED);
+         Tick("rtE", xe, ry - 4, 14, C_TXT);
+         Tick("rtT", rx + rw, ry - 4, 14, C_GREEN);
+         Lbl("rlS", rx, ry + 12, "SL", C_RED, fs - 2, "Segoe UI Semibold", ANCHOR_UPPER);
+         Lbl("rlE", xe, ry + 12, "ENTRÉE", C_TXT, fs - 2, "Segoe UI Semibold", ANCHOR_UPPER);
+         Lbl("rlT", rx + rw, ry + 12, "TP " + DoubleToString(InpRR, 0) + "R", C_GREEN, fs - 2, "Segoe UI Semibold", ANCHOR_UPPER);
+         for(int q = 1; q <= 3; q++)
+           {
+            double fq = (g.entry + g.s * q * g.dS - g.sl) / span;
+            if(fq <= fe || fq >= 1.0)
+               continue;
+            int xq = rx + (int)MathRound(fq * rw);
+            Tick("rt" + IntegerToString(q), xq, ry - 2, 10, C_MUTED);
+            Lbl("rl" + IntegerToString(q), xq, ry + 12, "+" + IntegerToString(q) + "R", C_MUTED, fs - 2, "Segoe UI", ANCHOR_UPPER);
+           }
+         double fc = MathMax(-0.03, MathMin(1.03, (bid - g.sl) / span));
+         int    xc = rx + (int)MathRound(fc * rw);
+         Tick("rtC", xc, ry - 8, 22, C_GOLD);
+         Lbl("rlC", xc, ry - 24, Px(bid), C_GOLD, fs - 2, "Segoe UI Semibold", ANCHOR_UPPER);
+        }
      }
    else
      {
@@ -1835,39 +2042,178 @@ void Draw()
       if(info)
          Lbl("s3", x0 + 28, yy, g_info, C_MUTED, fs - 1);
      }
-   //--- risque et règles
-   Lbl("rH", x0 + 28, yRisk + 10, "RISQUE & RÈGLES", C_MUTED, fs - 1, "Segoe UI Semibold");
-   Lbl("rA", x0 + 28, yRisk + 32, "Aujourd'hui", C_TXT, fs);
-   Lbl("rAv", x0 + W - 28, yRisk + 32, StringFormat("%+.2f ", pnl) + CurSym() + "   /   limite -" + Mo(stopAmt) + (stopHit ? "   ATTEINT" : ""),
-       stopHit ? C_RED : C_TXT, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
-   Lbl("rM", x0 + 28, yRisk + 68, "Ce mois", C_TXT, fs);
-   Lbl("rMv", x0 + W - 28, yRisk + 68, StringFormat("%+.2f ", mp) + CurSym() + "   /   limite -" + Mo(mlim) + (mHit ? "   ATTEINTE" : ""),
-       mHit ? C_RED : C_TXT, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
-   bool dd = InDrawdown();
-   Lbl("rR", x0 + 28, yRisk + 104, "Risque par trade", C_TXT, fs);
-   Lbl("rRv", x0 + W - 28, yRisk + 104, (InpFixedLot > 0) ? "lot fixe " + DoubleToString(InpFixedLot, 2) :
-       DoubleToString(EffRiskPct(), 2) + " %  ≈  " + Mo(bal * EffRiskPct() / 100.0) + (dd ? "   (réduit)" : ""),
-       dd ? C_AMBER : C_TXT, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
-   Lbl("rT", x0 + 28, yRisk + 124, "Trades FVG du jour", C_TXT, fs);
-   Lbl("rTv", x0 + W - 28, yRisk + 124, IntegerToString(nF) + " / " + IntegerToString(InpMaxPerDay) + "   ·   pertes de suite " + IntegerToString(streak) +
-       (pause ? "   PAUSE → " + HM(ToUTC(PauseEnd(lastLoss))) : ""), pause ? C_AMBER : C_TXT, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
-   string nTxt = "aucune dans la liste";
-   color  nClr = C_AMBER;
-   int    nw   = NewsWindow();
-   if(nw >= 0)
-      nTxt = g_newsN[nw] + " " + HM(g_newsT[nw]) + " UTC : pas de nouvel ordre";
+   //--- feux verts : toutes les règles d'un coup d'œil
+   Box("cChk", x0 + 10, yChk, W - 20, hChk, C_CARD, C_LINE);
+   Lbl("cH", x0 + 28, yChk + 10, "RÈGLES   (vert = autorisé)", C_MUTED, fs - 1, "Segoe UI Semibold");
+   string cl[12];
+   bool   cb[12];
+   cl[0]  = "Tendance D1" + (g_trend > 0 ? " ▲" : g_trend < 0 ? " ▼" : "");
+   cb[0]  = (g_trend != 0);
+   cl[1]  = "Volatilité " + DoubleToString(g_vol, 1) + " %";
+   cb[1]  = !calm;
+   cl[2]  = "Signal M15";
+   cb[2]  = g_has;
+   cl[3]  = friLate ? "Vendredi tard" : (nw >= 0 ? "Annonce en cours" : "Annonces / vendredi");
+   cb[3]  = (nw < 0 && !friLate);
+   cl[4]  = "Stop jour";
+   cb[4]  = !stopHit;
+   cl[5]  = "Stop mois";
+   cb[5]  = !mHit;
+   cl[6]  = "Pause pertes";
+   cb[6]  = !pause;
+   cl[7]  = "Trades " + IntegerToString(nF) + " / " + IntegerToString(InpMaxPerDay);
+   cb[7]  = (nF < InpMaxPerDay);
+   cl[8]  = "Symbole libre";
+   cb[8]  = (ex == 0);
+   cl[9]  = "Spread " + DoubleToString(ask - bid, 2) + " $";
+   cb[9]  = spOk;
+   cl[10] = "Algo Trading";
+   cb[10] = algo;
+   cl[11] = "Test " + (testStop ? "arrêté" : "en cours");
+   cb[11] = !testStop;
+   int cw = (W - 56) / 3;
+   for(int c = 0; c < 12; c++)
+      Dot("ck" + IntegerToString(c), x0 + 28 + (c % 3) * cw, yChk + 34 + (c / 3) * 22, cb[c], cl[c]);
+   //--- ordres et positions
+   Box("cPos", x0 + 10, yPos, W - 20, hPos, C_CARD, C_LINE);
+   Lbl("pH", x0 + 28, yPos + 10, "SUR " + _Symbol + "   (" + IntegerToString(ex) + ")", C_MUTED, fs - 1, "Segoe UI Semibold");
+   int yL = yPos + 30;
+   if(hasPos)
+     {
+      color  prc = (pR >= 0) ? C_GREEN : C_RED;
+      double RR  = MathMax(InpRR, 1.0);
+      int    bx  = x0 + 28;
+      int    bw  = W - 56;
+      int    by  = yPos + 56;
+      Lbl("pq", x0 + 28, yPos + 28, StringFormat("%+.2f R", pR) + "   ·   " + StringFormat("%+.2f ", pPnl) + CurSym() + "   ·   SL à " + StringFormat("%+.1f R", pRsl) +
+          "   ·   " + Dur(pHeld) + (g_hold > 0 ? " / " + IntegerToString(g_hold) + " h" : ""), prc, fs, "Segoe UI Semibold");
+      double f0 = 1.0 / (RR + 1.0);
+      double fn = MathMax(0.0, MathMin(1.0, (pR + 1.0) / (RR + 1.0)));
+      double fs2 = MathMax(0.0, MathMin(1.0, (pRsl + 1.0) / (RR + 1.0)));
+      int    xa = bx + (int)MathRound(MathMin(f0, fn) * bw);
+      int    xb = bx + (int)MathRound(MathMax(f0, fn) * bw);
+      Box("pb_tr", bx, by, bw, 6, C_LINE, C_LINE);
+      Box("pb_fi", xa, by, MathMax(1, xb - xa), 6, pR >= 0 ? C_GREEN : C_RED, pR >= 0 ? C_GREEN : C_RED);
+      Tick("pb_s", bx + (int)MathRound(fs2 * bw), by - 4, 14, C_RED);
+      Tick("pb_e", bx + (int)MathRound(f0 * bw), by - 4, 14, C_TXT);
+      Tick("pb_t", bx + bw, by - 4, 14, C_GREEN);
+      Tick("pb_c", bx + (int)MathRound(fn * bw), by - 6, 18, C_GOLD);
+      yL += 44;
+     }
+   if(nl == 0)
+      Lbl("p0", x0 + 28, yL, "Aucun ordre ni position", C_MUTED, fs);
+   for(int j = 0; j < nl; j++)
+      Lbl("p" + IntegerToString(j), x0 + 28, yL + 18 * j, ls[j], C_TXT, fs - 1);
+   //--- état et boutons
+   color stc = ok ? C_GREEN_D : (stopHit || mHit) ? C_RED_D : C_AMBER_D;
+   Box("stat", x0 + 10, yStat, W - 20, 32, stc, stc);
+   Lbl("stT", x0 + 28, yStat + 8, ok ? "✔   Prêt : clique sur ENVOYER" : "●   " + why, clrWhite, fs, "Segoe UI Semibold");
+   color  sb = C_GREY;
+   string st = "ENVOYER L'ORDRE";
+   if(ok)
+     {
+      sb = (g_best.s > 0) ? C_GREEN : C_RED;
+      st = (g_best.s > 0) ? "▲  ENVOYER L'ACHAT" : "▼  ENVOYER LA VENTE";
+     }
+   Btn("bSend", x0 + 10, yBtn, 280, 36, st, sb, clrWhite);
+   Btn("bCancel", x0 + 298, yBtn, 160, 36, "ANNULER MES ORDRES", C_GREY, clrWhite);
+   Btn("bAuto", x0 + 466, yBtn, 124, 36, g_auto ? "AUTO  ON" : "AUTO  OFF", g_auto ? C_GOLD : C_GREY, g_auto ? C'20,20,20' : clrWhite);
+   Lbl("foot", x0 + P, yFoot + 4, algo ? "Algo Trading activé   ·   robot n° " + IntegerToString(InpMagic) : "Algo Trading DÉSACTIVÉ : active-le dans MT5",
+       algo ? C_MUTED : C_RED, fs - 2);
+   Lbl("footG", x0 + W - P, yFoot + 4, GuardTxt(), C_MUTED, fs - 2, "Segoe UI", ANCHOR_RIGHT_UPPER);
+   g_panelH = H;
+   ChartRedraw();
+  }
+
+//+------------------------------------------------------------------+
+//| Vue PERFORMANCE : statistiques et courbe des trades du robot      |
+//+------------------------------------------------------------------+
+void DrawPerf()
+  {
+   RefreshPerf(false);
+   UpdateTestStats();
+   int      nF = 0, streak = 0;
+   datetime lastLoss = 0;
+   TodayPnl(nF, streak, lastLoss);
+   bool     pause = PauseActive(streak, lastLoss);
+   double   bal   = AccountInfoDouble(ACCOUNT_BALANCE);
+   int      n     = ArraySize(g_pV);
+   int      nb    = MathMin(n, 24);
+   string   sig   = "P" + (nb > 0 ? "1" : "0");
+   if(sig != g_sig)
+     {
+      ObjectsDeleteAll(0, "FVGP_");
+      g_sig = sig;
+      g_rows = 0;
+      g_jrows = 0;
+     }
+   int x0 = InpX, y0 = InpY, W = PW, fs = InpFont;
+   int hK   = 70;
+   int yK1  = y0 + 64 + 8;
+   int yK2  = yK1 + hK + 8;
+   int yCh  = yK2 + hK + 10;
+   int hCh  = (nb > 0) ? 150 : 70;
+   int yTs  = yCh + hCh + 10;
+   int hTs  = 30 + 22 * 6 + 8;
+   int yFoot = yTs + hTs + 10;
+   int H    = yFoot + 24 - y0;
+   Box("bg", x0, y0, W, H, C_BG, C_LINE);
+   Header(1);
+   //--- chiffres clés
+   double wr   = (g_pN > 0) ? 100.0 * g_pNw / g_pN : 0.0;
+   double pf   = (g_pSumL < 0) ? g_pSumW / (-g_pSumL) : (g_pSumW > 0 ? 99.0 : 0.0);
+   double sum  = g_pSumW + g_pSumL;
+   double exp1 = (g_pN > 0) ? sum / g_pN : 0.0;
+   double avW  = (g_pNw > 0) ? g_pSumW / g_pNw : 0.0;
+   double avL  = (g_pNl > 0) ? g_pSumL / g_pNl : 0.0;
+   int tw = (W - 20 - 3 * 8) / 4;
+   int tx = x0 + 10;
+   color pfc = (g_pN < 5) ? C_TXT : (pf >= 1.3) ? C_GREEN : (pf >= 1.0) ? C_AMBER : C_RED;
+   Tile("p1", tx, yK1, tw, hK, "TRADES DU ROBOT", IntegerToString(g_pN), C_TXT, "clos depuis le test", 0, 0);
+   Tile("p2", tx + (tw + 8), yK1, tw, hK, "RÉUSSITE", g_pN > 0 ? DoubleToString(wr, 0) + " %" : "–", C_TXT,
+        IntegerToString(g_pNw) + " gagnants · " + IntegerToString(g_pNl) + " perdants", 0, 0);
+   Tile("p3", tx + 2 * (tw + 8), yK1, tw, hK, "PROFIT FACTOR", g_pN > 0 ? (pf >= 99.0 ? "∞" : DoubleToString(pf, 2)) : "–", pfc, "gains / pertes", 0, 0);
+   Tile("p4", tx + 3 * (tw + 8), yK1, tw, hK, "ESPÉRANCE / TRADE", g_pN > 0 ? StringFormat("%+.2f ", exp1) + CurSym() : "–",
+        g_pN > 0 ? (exp1 > 0 ? C_GREEN : C_RED) : C_TXT, "total " + StringFormat("%+.2f ", sum) + CurSym(), 0, 0);
+   Tile("p5", tx, yK2, tw, hK, "GAIN MOYEN", g_pNw > 0 ? StringFormat("%+.2f ", avW) + CurSym() : "–", C_GREEN, "des gagnants", 0, 0);
+   Tile("p6", tx + (tw + 8), yK2, tw, hK, "PERTE MOYENNE", g_pNl > 0 ? StringFormat("%+.2f ", avL) + CurSym() : "–", C_RED, "des perdants", 0, 0);
+   Tile("p7", tx + 2 * (tw + 8), yK2, tw, hK, "MEILLEUR TRADE", g_pN > 0 ? StringFormat("%+.2f ", g_pBest) + CurSym() : "–", C_TXT,
+        "pire " + (g_pN > 0 ? StringFormat("%+.2f ", g_pWorst) + CurSym() : "–"), 0, 0);
+   Tile("p8", tx + 3 * (tw + 8), yK2, tw, hK, "SÉRIE DE PERTES", IntegerToString(g_pRun), g_pRun >= 5 ? C_AMBER : C_TXT, "de suite, maximum", 0, 0);
+   //--- courbe des derniers trades
+   Box("cCh", x0 + 10, yCh, W - 20, hCh, C_CARD, C_LINE);
+   Lbl("chH", x0 + 28, yCh + 10, "DERNIERS TRADES DU ROBOT   (" + IntegerToString(nb) + ")", C_MUTED, fs - 1, "Segoe UI Semibold");
+   if(nb == 0)
+      Lbl("ch0", x0 + 28, yCh + 36, "Aucun trade clos du robot depuis le début du test", C_MUTED, fs);
    else
      {
-      int nn = NewsNext();
-      if(nn >= 0)
+      double mx = 0;
+      for(int j = n - nb; j < n; j++)
+         mx = MathMax(mx, MathAbs(g_pV[j]));
+      if(mx <= 0)
+         mx = 1;
+      int cx   = x0 + 28;
+      int cwid = W - 56;
+      int cy   = yCh + 36;
+      int ch   = 100;
+      int mid  = cy + ch / 2;
+      int slot = cwid / 24;
+      Lbl("chS", x0 + W - 28, yCh + 10, "échelle ± " + Mo(mx), C_MUTED, fs - 2, "Segoe UI", ANCHOR_RIGHT_UPPER);
+      Box("chZ", cx, mid, cwid, 1, C_LINE, C_LINE);
+      for(int j = 0; j < nb; j++)
         {
-         nTxt = g_newsN[nn] + "  " + TimeToString(g_newsT[nn], TIME_DATE | TIME_MINUTES) + " UTC  ·  dans " + Dur((long)g_newsT[nn] - (long)NowUTC());
-         nClr = C_TXT;
+         double v  = g_pV[n - nb + j];
+         int    hh = MathMax(2, (int)MathRound(MathAbs(v) / mx * (ch / 2 - 2)));
+         int    bxx = cx + j * slot + 2;
+         if(v >= 0)
+            Box("cb" + IntegerToString(j), bxx, mid - hh, slot - 4, hh, C_GREEN, C_GREEN);
+         else
+            Box("cb" + IntegerToString(j), bxx, mid + 1, slot - 4, hh, C_RED, C_RED);
         }
      }
-   Lbl("rN", x0 + 28, yRisk + 144, "Prochaine annonce", C_TXT, fs);
-   Lbl("rNv", x0 + W - 28, yRisk + 144, nTxt, nClr, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
-   UpdateTestStats();
+   //--- test, fiabilité, risque
+   Box("cTs", x0 + 10, yTs, W - 20, hTs, C_CARD, C_LINE);
+   Lbl("tH", x0 + 28, yTs + 10, "TEST ET RISQUE", C_MUTED, fs - 1, "Segoe UI Semibold");
    string tTx;
    color  tCl = C_TXT;
    if(InpTestStopDD > 0 && g_tDD >= InpTestStopDD)
@@ -1884,34 +2230,46 @@ void Draw()
       else
          tTx = IntegerToString(g_tN) + " / " + IntegerToString(InpTestTrades) + "   ·   " + StringFormat("%+.2f ", g_tNet) + CurSym() +
                "   ·   baisse " + DoubleToString(g_tDD, 1) + " %";
-   Lbl("rX", x0 + 28, yRisk + 164, "Test " + IntegerToString(InpTestTrades) + " trades", C_TXT, fs);
-   Lbl("rXv", x0 + W - 28, yRisk + 164, tTx, tCl, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
-   color gCl = (g_slipAvg > 2 * InpSlipWarn) ? C_RED : (g_slipAvg > InpSlipWarn) ? C_AMBER : C_TXT;
-   Lbl("rG", x0 + 28, yRisk + 184, "Glissement sur SL/TP", C_TXT, fs);
-   Lbl("rGv", x0 + W - 28, yRisk + 184, (g_slipN > 0) ? "moyenne " + DoubleToString(g_slipAvg, 2) + " $   ·   max " + DoubleToString(g_slipMax, 2) +
-       " $   ·   " + IntegerToString(g_slipN) + " sorties" : "pas encore de sortie mesurée", gCl, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
-   //--- ordres et positions
-   Lbl("pH", x0 + 28, yPos + 10, "SUR " + _Symbol + "   (" + IntegerToString(ex) + ")", C_MUTED, fs - 1, "Segoe UI Semibold");
-   if(nl == 0)
-      Lbl("p0", x0 + 28, yPos + 30, "Aucun ordre ni position", C_MUTED, fs);
-   for(int j = 0; j < nl; j++)
-      Lbl("p" + IntegerToString(j), x0 + 28, yPos + 30 + 18 * j, ls[j], C_TXT, fs - 1);
-   //--- état et boutons
-   Lbl("stT", x0 + 28, yStat + 8, ok ? "✔   Prêt : clique sur ENVOYER" : "●   " + why, clrWhite, fs, "Segoe UI Semibold");
-   color  sb = C_GREY;
-   string st = "ENVOYER L'ORDRE";
-   if(ok)
+   int ry = yTs + 32;
+   Lbl("t1k", x0 + 28, ry, "Test " + IntegerToString(InpTestTrades) + " trades", C_TXT, fs);
+   Lbl("t1v", x0 + W - 28, ry, tTx, tCl, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
+   ry += 22;
+   Lbl("t2k", x0 + 28, ry, "Fiabilité statistique", C_TXT, fs);
+   Lbl("t2v", x0 + W - 28, ry, IntegerToString(g_pN) + " / 100 trades" + (g_pN < 100 ? "   (trop peu pour conclure)" : "   (échantillon utile)"),
+       g_pN < 100 ? C_AMBER : C_GREEN, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
+   ry += 22;
+   bool dd = InDrawdown();
+   Lbl("t3k", x0 + 28, ry, "Risque par trade", C_TXT, fs);
+   Lbl("t3v", x0 + W - 28, ry, (InpFixedLot > 0) ? "lot fixe " + DoubleToString(InpFixedLot, 2) :
+       DoubleToString(EffRiskPct(), 2) + " %  ≈  " + Mo(bal * EffRiskPct() / 100.0) + (dd ? "   (réduit)" : ""),
+       dd ? C_AMBER : C_TXT, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
+   ry += 22;
+   Lbl("t4k", x0 + 28, ry, "Trades FVG du jour", C_TXT, fs);
+   Lbl("t4v", x0 + W - 28, ry, IntegerToString(nF) + " / " + IntegerToString(InpMaxPerDay) + "   ·   pertes de suite " + IntegerToString(streak) +
+       (pause ? "   PAUSE → " + HM(ToUTC(PauseEnd(lastLoss))) : ""), pause ? C_AMBER : C_TXT, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
+   ry += 22;
+   string nTxt = "aucune dans la liste";
+   color  nClr = C_AMBER;
+   int    nw   = NewsWindow();
+   if(nw >= 0)
+      nTxt = g_newsN[nw] + " " + HM(g_newsT[nw]) + " UTC : pas de nouvel ordre";
+   else
      {
-      sb = (g_best.s > 0) ? C_GREEN : C_RED;
-      st = (g_best.s > 0) ? "▲  ENVOYER L'ACHAT" : "▼  ENVOYER LA VENTE";
+      int nn = NewsNext();
+      if(nn >= 0)
+        {
+         nTxt = g_newsN[nn] + "  " + TimeToString(g_newsT[nn], TIME_DATE | TIME_MINUTES) + " UTC  ·  dans " + Dur((long)g_newsT[nn] - (long)NowUTC());
+         nClr = C_TXT;
+        }
      }
-   Btn("bSend", x0 + 10, yBtn, 250, 36, st, sb, clrWhite);
-   Btn("bCancel", x0 + 268, yBtn, 150, 36, "ANNULER MES ORDRES", C_GREY, clrWhite);
-   Btn("bAuto", x0 + 426, yBtn, 104, 36, g_auto ? "AUTO  ON" : "AUTO  OFF", g_auto ? C_GOLD : C_GREY, g_auto ? C'20,20,20' : clrWhite);
-   bool algo = (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 && MQLInfoInteger(MQL_TRADE_ALLOWED) != 0);
-   Lbl("foot", x0 + P, yFoot + 4, algo ? "Algo Trading activé   ·   robot n° " + IntegerToString(InpMagic) : "Algo Trading DÉSACTIVÉ : active-le dans MT5",
-       algo ? C_MUTED : C_RED, fs - 2);
-   Lbl("footG", x0 + W - P, yFoot + 4, GuardTxt(), C_MUTED, fs - 2, "Segoe UI", ANCHOR_RIGHT_UPPER);
+   Lbl("t5k", x0 + 28, ry, "Prochaine annonce", C_TXT, fs);
+   Lbl("t5v", x0 + W - 28, ry, nTxt, nClr, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
+   ry += 22;
+   color gCl = (g_slipAvg > 2 * InpSlipWarn) ? C_RED : (g_slipAvg > InpSlipWarn) ? C_AMBER : C_TXT;
+   Lbl("t6k", x0 + 28, ry, "Glissement sur SL/TP", C_TXT, fs);
+   Lbl("t6v", x0 + W - 28, ry, (g_slipN > 0) ? "moyenne " + DoubleToString(g_slipAvg, 2) + " $   ·   max " + DoubleToString(g_slipMax, 2) +
+       " $   ·   " + IntegerToString(g_slipN) + " sorties" : "pas encore de sortie mesurée", gCl, fs, "Segoe UI", ANCHOR_RIGHT_UPPER);
+   Lbl("foot", x0 + 18, yFoot + 4, "Statistiques du robot (n° " + IntegerToString(InpMagic) + ") · mises à jour toutes les 20 s", C_MUTED, fs - 2);
    g_panelH = H;
    ChartRedraw();
   }
@@ -2287,13 +2645,13 @@ void DrawJournal()
   {
    int x  = InpX;
    int y0 = InpY;
-   int w  = 540;
+   int w  = PW;
    if(g_jLast == 0)
       ComputeJournal();
    Rect("bg", x, y0, w, g_panelH);
    int y = y0 + 8;
-   Lbl("title", x + 12, y, "Journal de trading · Axi " + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)), C_TXT, InpFont + 2, "Segoe UI Semibold");
-   Btn("bView", x + w - 100, y - 2, 88, 24, "ANALYSE", C_GREY, clrWhite);
+   Lbl("title", x + 12, y, "Journal · Axi " + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)), C_TXT, InpFont + 2, "Segoe UI Semibold");
+   Tabs(2);
    y += RowH() + 10;
    int i = 0;
    for(int j = 0; j < ArraySize(g_jk); j++)
@@ -2342,6 +2700,8 @@ void SwitchView(const int v)
    g_jrows = 0;
    if(g_view == 1)
       ComputeJournal();
+   if(g_view == 2)
+      RefreshPerf(true);
    Draw();
   }
 
@@ -2490,9 +2850,10 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(StringFind(sparam, "FVGP_") != 0)
       return;
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
-   if(sparam == N("bView"))
+   if(StringFind(sparam, N("bTab")) == 0)
      {
-      SwitchView(g_view == 1 ? 0 : 1);
+      int tab = (int)StringToInteger(StringSubstr(sparam, StringLen(N("bTab"))));
+      SwitchView(tab == 0 ? 0 : (tab == 1 ? 2 : 1));   // vues : 0 analyse, 2 performance, 1 journal
       return;
      }
    if(StringFind(sparam, N("bP")) == 0)
@@ -2553,6 +2914,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
       return;
    g_jLast = 0;   // le journal sera recalculé
+   g_pLast = 0;   // les statistiques aussi
    if(!HistoryDealSelect(trans.deal))
       return;
    if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol)
